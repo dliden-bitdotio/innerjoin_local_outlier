@@ -1,0 +1,520 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(DBI)
+library(scales)
+library(cowplot)
+library(magick)
+
+GREY = '#788995'
+BLUE = '#0059ff'
+GOLD = '#fdbd28'
+GREEN = '#28D9AA'
+RED = '#EE5149'
+WGRAY = "#F4F8FB"
+NAVY = "#060F41" # very dark
+
+METAL_SUN = '#AD8D40'
+DARK_ORCHID = '#9A34D1'
+MAGENTA = '#8A4859'
+OXFORD = '#121C3B'
+PINK = '#DB9995'
+
+```
+
+```{r}
+prods = c("FIREWORK", "LAWN MOW", "BICYCL", "CHRISTMAS", "SWIM", "FISHI", "KNIV")
+bps = c("EAR", "FACE", "FOOT")
+diags = c("BURN", "LACERAT")
+
+data <- read.csv("../data/by_hday.csv")
+
+df <- data %>%
+  group_by(ind_day = as.factor(ind_day), chr = as.factor(Christmas), Product_1, Diagnosis, Body_Part) %>%
+  summarise(weighted = sum(Weight), n=n()) %>%
+  group_by(ind_day, chr)%>%
+  mutate(avg = weighted/sum(weighted))
+
+prod_df <- df %>%
+  filter(str_detect(Product_1, str_c(prods, collapse="|")))%>%
+  filter(!(Product_1 %in% c("FLATWARE (EXCL. KNIVES)",
+                            "BABY CARRIERS (BICYCLE-MOUNTED)",
+                            "WATER SLIDES, BACKYARD/HOME (NOT SWIMMING POOL SLIDES)"))) %>%
+  mutate(name = case_when(
+    str_detect(Product_1, "KNIV") ~ "Knives",
+    str_detect(Product_1, "LAWN") ~ "Lawn Mowers",
+    str_detect(Product_1, "CHRISTMAS") ~ "Christmas Decorations",
+    str_detect(Product_1, "BICYC") ~ "Bicycles",
+    str_detect(Product_1, "FIREWORK") ~ "Fireworks",
+    str_detect(Product_1, "SWIM") ~ "Swimming/Pools",
+    str_detect(Product_1, "FISH") ~ "Fishing Gear")
+  ) %>%
+  group_by("ind_day" = as.factor(ind_day), "Christmas" = as.factor(chr), name) %>%
+  summarise(weighted=sum(weighted), avg=sum(avg)) %>%
+  mutate(category="Products")
+
+diag_df <- df %>%
+  filter(str_detect(Diagnosis, str_c(diags, collapse="|"))) %>%
+  mutate(name = case_when(
+    str_detect(Diagnosis, "BURN") ~ "Burn",
+    str_detect(Diagnosis, "LACERA") ~ "Laceration"
+  )) %>%
+  group_by("ind_day" = as.factor(ind_day), "Christmas" = as.factor(chr), name) %>%
+  summarise(weighted=sum(weighted), avg=sum(avg)) %>%
+  mutate(category="Diagnoses")
+
+bp_df <- df %>%
+  filter(str_detect(Body_Part, str_c(bps, collapse="|"))) %>%
+  mutate(name = case_when(
+  str_detect(Body_Part, "EAR") ~ "Ear",
+  str_detect(Body_Part, "FACE") ~ "Face",
+  str_detect(Body_Part, "FOOT") ~ "Foot"
+)) %>%
+  group_by("ind_day" = as.factor(ind_day), "Christmas" = as.factor(chr), name) %>%
+  summarise(weighted=sum(weighted), avg=sum(avg)) %>%
+  mutate(category="Body Parts")
+
+comp_df <- rbind(prod_df, diag_df, bp_df)
+comp_df$weighted[comp_df$ind_day=="FALSE" & comp_df$Christmas=="FALSE"] = comp_df$weighted[comp_df$ind_day=="FALSE" & comp_df$Christmas=="FALSE"]/363
+comp_df$weighted[comp_df$Christmas] = comp_df$weighted[comp_df$Christmas]/2
+comp_df$hday = case_when(comp_df$ind_day=="TRUE" ~ "Independence Day",
+                         comp_df$Christmas=="TRUE" ~ "Christmas Eve/Day",
+                         TRUE ~ "Other Days")
+```
+
+```{r}
+img <- png::readPNG("~/Downloads/Union.png")
+
+compfig <- ggplot(comp_df) +
+  geom_col(aes(x=avg, y=reorder(name, avg), fill=category), alpha=0.8, width = 0.75,
+           color="black", size=0.2) +
+  facet_wrap(facets = hday ~ .) +
+  scale_x_continuous(label=scales::percent_format(accuracy = 5L), n.breaks = 5) +
+  scale_y_discrete(name=NULL, label = function(x) str_wrap(x, 15)) +
+  scale_fill_manual(values = c(BLUE, RED, GOLD), name="Category") +
+  ggtitle("Major Sources of Variation in Holiday Injuries") +
+  xlab("Proportion of Daily Injuries") +
+  ylab(NULL) +
+  labs(caption = c(paste("Data Source: https://bit.io/bitdotio/neiss", sep='\n'))) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(size = 7, family = "Inter", face = "bold"),
+    axis.text.y = element_text(size = 7, family = "Inter", face = "bold"),
+    axis.title = element_text(size = 8, family = "Inter", face = "bold", color="#8F8F8F"),
+    plot.title = element_text(family="Comfortaa Bold", size = 14, face="bold", hjust=0.5),
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust=0,
+                                vjust = 0,family = "Inter", size=7, color="black"),
+    plot.subtitle = element_text(family = "Comfortaa", color="#8F8F8F", face="bold", size = 6),
+    #legend.position = "None",
+    legend.text = element_text(family="Inter"),
+    legend.title = element_text(family = "Comfortaa"),
+    strip.text = element_text(family="Comfortaa", face="bold", color="black"),
+    strip.background = element_rect(fill="white"),
+    panel.spacing.x = unit(1,"lines"),
+    plot.margin = margin(l=20, r=15, t=10, b=10)
+  )
+compfig
+
+# Set the canvas where you are going to draw the plot and the image
+#ggdraw() +
+  # Draw the plot in the canvas setting the x and y positions, which go from 0,0
+  # (lower left corner) to 1,1 (upper right corner) and set the width and height of
+  # the plot. It's advisable that x + width = 1 and y + height = 1, to avoid clipping 
+  # the plot
+#  draw_plot(compfig,x = 0, y = 0, width = 1, height = 1) +
+  # Draw image in the canvas using the same concept as for the plot. Might need to 
+  # play with the x, y, width and height values to obtain the desired result
+#  draw_image(img,x = 0.87, y = 0.032, width = 0.1, height = 0.1)  
+
+ggsave(filename = "../figures/pca_explore.png", dpi=300, width = 7, height=4, units = "in", device="png")
+```
+
+
+
+```{r}
+con <- dbConnect(RPostgres::Postgres(), dbname = 'bitdotio', 
+                 host = 'db.bit.io',
+                 port = 5432,
+                 user = 'name',
+                 password = Sys.getenv("BITIO_PASS2"))
+
+neiss <- in_schema("bitdotio/neiss", "neiss_2016_2020")
+
+neiss_agg_year_hday <- con %>%
+  tbl(neiss) %>%
+  select(CPSC_Case_Number, Treatment_Date, Product_1,
+         Diagnosis, Body_Part, Weight) %>%
+  mutate(ind_day = (month(Treatment_Date)==7 & day(Treatment_Date)==4),
+         Christmas = (month(Treatment_Date)==12 & ((day(Treatment_Date)==24) | day(Treatment_Date)==25)))%>%
+  collect()
+
+write_csv(neiss_agg_year_hday, "../data/by_hday.csv")
+```
+
+```{r}
+data <- read.csv("../data/by_hday.csv")
+
+ten_prod <- data %>%
+  group_by(Product_1) %>%
+  summarise(weighted=sum(Weight)) %>%
+  arrange(desc(weighted)) %>%
+  slice_max(weighted, n=10) %>%
+  select(Product_1)
+
+ten_diag <- data %>%
+  group_by(Diagnosis) %>%
+  summarise(weighted=sum(Weight)) %>%
+  arrange(desc(weighted)) %>%
+  slice_max(weighted, n=10) %>%
+  select(Diagnosis)
+
+ten_bp <- data %>%
+  group_by(Body_Part) %>%
+  summarise(weighted=sum(Weight)) %>%
+  arrange(desc(weighted)) %>%
+  slice_max(weighted, n=10) %>%
+  select(Body_Part)
+
+df <- data %>%
+  group_by(ind_day = as.factor(ind_day), chr = as.factor(Christmas), Product_1) %>%
+  summarise(weighted = sum(Weight), n=n()) %>%
+  group_by(ind_day, chr)%>%
+  mutate(avg = weighted/sum(weighted))
+
+
+
+indday <- df %>%
+  filter(ind_day=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+christmas <- df %>%
+  filter(chr=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+not_hday <- df %>%
+  filter(ind_day=="FALSE" & chr=="FALSE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+combined = rbind(indday, christmas, not_hday)
+prods = combined$Product_1
+combined = filter(df, Product_1 %in% prods)
+combined$hday = case_when(combined$ind_day=="TRUE" ~ "Independence Day",
+                          combined$chr=="TRUE" ~ "Christmas Eve/Day",
+                          TRUE ~ "Other Days")
+combined$Product_1 = str_to_title(combined$Product_1)
+combined$unique = FALSE
+
+combined$prod = str_replace(combined$Product_1, "\\(.*\\)", "Equipment")
+
+combined <- combined %>%
+  mutate(prod2 = case_when(
+    prod == "All Terrain Vehicles Atv Equipment" ~ "ATV Equipment",
+    prod == "Basketball, Activity And Related Equipment" ~ "Basketball Equipment",
+    prod == "Beds Or Bedframes, Other Or Not Specified" ~ "Beds or Bedframes",
+    prod == "Bicycles And Accessories, Equipment" ~ "Bicycles and Accessories",
+    prod == "Ceilings And Walls Equipment" ~  "Ceilings and Walls",
+    prod == "Chairs, Other Or Not Specified" ~ "Chairs",
+    prod == "Doors, Other Or Not Specified" ~ "Doors",
+    prod == "Floors Or Flooring Materials" ~ "Floors and Flooring Materials",
+    prod == "Knives, Not Elsewhere Classified" ~ "Knives",
+    prod == "Ladders, Other Or Not Specified" ~ "Ladders",
+    prod == "Porches, Balconies, Open-Side Floors Or Floor Openings" ~ "Porches and Balconies",
+    prod == "Skateboards, Unpowered Or Unspecified" ~ "Skateboards",
+    prod == "Swimming Pools, Not Specified" ~ "Swimming Pools",
+    prod == "Tables (Excl.  Baby Changing Tables, Billiard Or Pool Tables" ~ "Tables",
+    prod == "Sofas, Couches, Davenports, Divans Or Studio Couches" ~ "Sofas and Couches",
+    prod == "Cabinets, Racks, Room Dividers And Shelves, Nec" ~ "Shelving",
+    prod == "Scooters / Skateboards, Powered" ~ "Powered Scooters/Skateboards",
+    prod == "Containers, Not Specified" ~ "Containers",
+    TRUE ~ prod
+  ))
+
+hl = c("Fireworks", "Swimming Equipment", "ATV Equipment", "Fishing Equipment",
+       "Swimming Pools")
+unique = combined %>%
+  inner_join(combined[combined$hday=="Other Days", c("avg", "prod2")], by = "prod2") %>%
+  rename("other_avg" = avg.y, "avg" = avg.x) %>%
+  mutate(unique = (abs(avg-other_avg)/other_avg > 0.5))
+
+```
+
+```{r}
+img <- png::readPNG("~/Downloads/Union.png")
+
+prodfig <- ggplot(unique) +
+  geom_col(aes(x=avg, y=reorder(prod2, avg), fill=unique), alpha=0.8) +
+  facet_wrap(facets = hday ~ .) +
+  scale_x_continuous(label=scales::percent_format(accuracy = 5L), n.breaks = 3) +
+  #scale_y_discrete(name=NULL) +
+  scale_fill_manual(values = c(BLUE, RED)) +
+  ggtitle("Top Products Associated with Injuries") +
+  xlab("Percentage of Injuries") +
+  ylab(NULL) +
+  labs(caption = c(paste("Red bars represent products over or underrepresented on the holiday compared to other days.",
+                       "Data Source: https://bit.io/bitdotio/neiss", sep='\n'), "@bitdotioinc")) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(size = 7, family = "Inter", face = "bold"),
+    axis.text.y = element_text(size = 7, family = "Inter", face = "bold"),
+    axis.title = element_text(size = 8, family = "Inter", face = "bold", color="#8F8F8F"),
+    plot.title = element_text(family="Comfortaa Bold", size = 14, face="bold", hjust=0.5),
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust=0,
+                                vjust = 0,family = "Inter", size=7, color="black"),
+    plot.subtitle = element_text(family = "Comfortaa", color="#8F8F8F", face="bold", size = 6),
+    legend.position = "None",
+    strip.text = element_text(family="Comfortaa", face="bold", color="black"),
+    strip.background = element_rect(fill="white"),
+    panel.spacing.x = unit(1,"lines"),
+    plot.margin = margin(l=15, r=15, t=10, b=10)
+  )
+prodfig
+
+# Set the canvas where you are going to draw the plot and the image
+#ggdraw() +
+  # Draw the plot in the canvas setting the x and y positions, which go from 0,0
+  # (lower left corner) to 1,1 (upper right corner) and set the width and height of
+  # the plot. It's advisable that x + width = 1 and y + height = 1, to avoid clipping 
+  # the plot
+#  draw_plot(prodfig,x = 0, y = 0, width = 1, height = 1) +
+  # Draw image in the canvas using the same concept as for the plot. Might need to 
+  # play with the x, y, width and height values to obtain the desired result
+ # draw_image(img,x = 0.87, y = 0.032, width = 0.1, height = 0.1)  
+
+ggsave(filename = "../figures/holiday_products.png", dpi=300, width = 7, height=5, units = "in", device="png")
+```
+
+# Diagnoses
+
+```{r}
+# diagnoses
+df <- data %>%
+  group_by(ind_day = as.factor(ind_day), chr = as.factor(Christmas), Diagnosis) %>%
+  #filter(!(Product_1 %in% ten_prod$Product_1)) %>%
+  summarise(weighted = sum(Weight), n=n()) %>%
+  group_by(ind_day, chr)%>%
+  mutate(avg = weighted/sum(weighted))
+
+
+
+indday <- df %>%
+  filter(ind_day=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+christmas <- df %>%
+  filter(chr=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+not_hday <- df %>%
+  filter(ind_day=="FALSE" & chr=="FALSE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+combined = rbind(indday, christmas, not_hday)
+diags = combined$Diagnosis
+combined = filter(df, Diagnosis %in% diags)
+combined$hday = case_when(combined$ind_day=="TRUE" ~ "Independence Day",
+                          combined$chr=="TRUE" ~ "Christmas Eve/Day",
+                          TRUE ~ "Other Days")
+combined$Diagnosis = str_to_title(combined$Diagnosis)
+combined$unique = FALSE
+
+unique = combined %>%
+  inner_join(combined[combined$hday=="Other Days", c("avg", "Diagnosis")], by = "Diagnosis") %>%
+  rename("other_avg" = avg.y, "avg" = avg.x) %>%
+  mutate(unique = (abs(avg-other_avg)/other_avg > 0.25))
+```
+
+```{r}
+img <- png::readPNG("~/Downloads/Union.png")
+
+diagfig <- ggplot(unique) +
+  geom_col(aes(x=avg, y=reorder(Diagnosis, avg), fill=unique), alpha=0.8) +
+  facet_wrap(facets = hday ~ .) +
+  scale_x_continuous(label=percent, n.breaks = 4) +
+  #scale_y_discrete(name=NULL) +
+  scale_fill_manual(values = c(BLUE, RED)) +
+  ggtitle("Top Product-Related Injury Diagnoses") +
+  xlab("Percentage of Injuries") +
+  ylab(NULL) +
+  labs(caption = c(paste("Red bars represent diagnoses over or underrepresented on the holiday compared to other days.",
+                       "Data Source: https://bit.io/bitdotio/neiss", sep='\n'), "@bitdotioinc")) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(size = 7, family = "Iosevka Term", face = "bold"),
+    axis.text.y = element_text(size = 7, family = "Iosevka Term", face = "bold"),
+    axis.title = element_text(size = 8, family = "Roboto", face = "bold", color="#8F8F8F"),
+    plot.title = element_text(family="Roboto Slab", size = 14, face="bold", hjust=0.5),
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust=c(0,1),
+                                vjust = c(0,0),family = "Iosevka Term", size=7, color=c("black", GOLD)),
+    plot.subtitle = element_text(family = "Roboto", color="#8F8F8F", face="bold", size = 6),
+    legend.position = "None",
+    strip.text = element_text(family="Iosevka Term", face="bold"),
+    panel.spacing.x = unit(1,"lines"),
+    plot.margin = margin(l=10, r=15, t=10, b=10)
+  )
+diagfig
+
+# Set the canvas where you are going to draw the plot and the image
+ggdraw() +
+  # Draw the plot in the canvas setting the x and y positions, which go from 0,0
+  # (lower left corner) to 1,1 (upper right corner) and set the width and height of
+  # the plot. It's advisable that x + width = 1 and y + height = 1, to avoid clipping 
+  # the plot
+  draw_plot(diagfig,x = 0, y = 0, width = 1, height = 1) +
+  # Draw image in the canvas using the same concept as for the plot. Might need to 
+  # play with the x, y, width and height values to obtain the desired result
+  draw_image(img,x = 0.87, y = 0.032, width = 0.1, height = 0.1)  
+
+ggsave(filename = "../figures/holiday_diags.png", dpi=300, width = 7, height=4, units = "in", device="png")
+```
+
+# Body Parts
+
+```{r}
+# body parts
+df <- data %>%
+  group_by(ind_day = as.factor(ind_day), chr = as.factor(Christmas), Body_Part) %>%
+  #filter(!(Product_1 %in% ten_prod$Product_1)) %>%
+  summarise(weighted = sum(Weight), n=n()) %>%
+  group_by(ind_day, chr)%>%
+  mutate(avg = weighted/sum(weighted))
+
+
+
+indday <- df %>%
+  filter(ind_day=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+christmas <- df %>%
+  filter(chr=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+not_hday <- df %>%
+  filter(ind_day=="FALSE" & chr=="FALSE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+combined = rbind(indday, christmas, not_hday)
+diags = combined$Body_Part
+combined = filter(df, Body_Part %in% diags)
+combined$hday = case_when(combined$ind_day=="TRUE" ~ "Independence Day",
+                          combined$chr=="TRUE" ~ "Christmas Eve/Day",
+                          TRUE ~ "Other Days")
+combined$Body_Part = str_to_title(combined$Body_Part)
+combined$unique = FALSE
+
+unique = combined %>%
+  inner_join(combined[combined$hday=="Other Days", c("avg", "Body_Part")], by = "Body_Part") %>%
+  rename("other_avg" = avg.y, "avg" = avg.x) %>%
+  mutate(unique = (abs(avg-other_avg)/other_avg > 0.25))
+```
+
+
+
+```{r}
+img <- png::readPNG("~/Downloads/Union.png")
+
+bpfig <- ggplot(unique) +
+  geom_col(aes(x=avg, y=reorder(Body_Part, avg), fill=unique), alpha=0.8) +
+  facet_wrap(facets = hday ~ .) +
+  scale_x_continuous(label=percent, n.breaks = 4) +
+  #scale_y_discrete(name=NULL) +
+  scale_fill_manual(values = c(BLUE, RED)) +
+  ggtitle("Body Parts Injured") +
+  xlab("Percentage of Injuries") +
+  ylab(NULL) +
+  labs(caption = c(paste("Red bars represent body part injuries significantly over or underrepresented on the holiday compared to other days.",
+                       "Data Source: https://bit.io/bitdotio/neiss", sep='\n'), "@bitdotioinc")) +
+  theme_light() +
+  theme(
+    axis.text.x = element_text(size = 7, family = "Iosevka Term", face = "bold"),
+    axis.text.y = element_text(size = 7, family = "Iosevka Term", face = "bold"),
+    axis.title = element_text(size = 8, family = "Roboto", face = "bold", color="#8F8F8F"),
+    plot.title = element_text(family="Roboto Slab", size = 14, face="bold", hjust=0.5),
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust=c(0,1),
+                                vjust = c(0,0),family = "Roboto", size=7, color=c("black", GOLD)),
+    plot.subtitle = element_text(family = "Roboto", color="#8F8F8F", face="bold", size = 6),
+    legend.position = "None",
+    strip.text = element_text(family="Iosevka Term", face="bold"),
+    panel.spacing.x = unit(1,"lines"),
+    plot.margin = margin(l=10, r=15, t=10, b=10)
+  )
+bpfig
+
+# Set the canvas where you are going to draw the plot and the image
+ggdraw() +
+  # Draw the plot in the canvas setting the x and y positions, which go from 0,0
+  # (lower left corner) to 1,1 (upper right corner) and set the width and height of
+  # the plot. It's advisable that x + width = 1 and y + height = 1, to avoid clipping 
+  # the plot
+  draw_plot(bpfig,x = 0, y = 0, width = 1, height = 1) +
+  # Draw image in the canvas using the same concept as for the plot. Might need to 
+  # play with the x, y, width and height values to obtain the desired result
+  draw_image(img,x = 0.87, y = 0.032, width = 0.1, height = 0.1)  
+
+ggsave(filename = "../figures/holiday_bps.png", dpi=300, width = 7, height=4, units = "in", device="png")
+```
+
+# Injury Counts
+
+```{r}
+df <- data %>%
+  mutate(ind_day = (month(Treatment_Date)==7 & day(Treatment_Date)==4),
+           Christmas = (month(Treatment_Date)==12 & day(Treatment_Date)==25),
+           Christmas_Eve = (month(Treatment_Date)==12 & day(Treatment_Date)==24)) %>%
+  group_by(ind_day = as.factor(ind_day), chr = as.factor(Christmas),
+           ce = as.factor(Christmas_Eve)) %>%
+  summarise(weighted = sum(Weight), n=n()) %>%
+  group_by(ind_day, chr, ce)
+
+
+  
+
+
+
+indday <- df %>%
+  filter(ind_day=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+christmas <- df %>%
+  filter(chr=="TRUE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+not_hday <- df %>%
+  filter(ind_day=="FALSE" & chr=="FALSE") %>%
+  arrange(desc(weighted)) %>%
+  slice_head(n=20)
+
+combined = rbind(indday, christmas, not_hday)
+diags = combined$Body_Part
+combined = filter(df, Body_Part %in% diags)
+combined$hday = case_when(combined$ind_day=="TRUE" ~ "Independence Day",
+                          combined$chr=="TRUE" ~ "Christmas Eve/Day",
+                          TRUE ~ "Other Days")
+combined$Body_Part = str_to_title(combined$Body_Part)
+combined$unique = FALSE
+
+unique = combined %>%
+  inner_join(combined[combined$hday=="Other Days", c("avg", "Body_Part")], by = "Body_Part") %>%
+  rename("other_avg" = avg.y, "avg" = avg.x) %>%
+  mutate(unique = (abs(avg-other_avg)/other_avg > 0.25))
+```
+
